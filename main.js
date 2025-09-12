@@ -470,6 +470,19 @@ async function connectToRealtime(apiKey, model) {
                             type: 'object',
                             properties: {}
                         }
+                    },
+                    {
+                        type: 'function',
+                        name: 'webhook_post',
+                        description: 'POST a JSON payload to an external webhook',
+                        parameters: {
+                            type: 'object',
+                            properties: {
+                                payload: { type: 'object', description: 'JSON payload to send' },
+                                url: { type: 'string', description: 'Optional webhook URL override' }
+                            },
+                            required: ['payload']
+                        }
                     }
                 ]
             }
@@ -758,6 +771,32 @@ async function handleRealtimeMessage(message) {
                     dc.send(JSON.stringify(functionOutput));
                 }
                 log('Sent voice_disconnect function call output');
+                if (dc && dc.readyState === 'open') {
+                    dc.send(JSON.stringify({ type: 'response.create' }));
+                }
+            } else if (name === 'webhook_post') {
+                const payload = (args && typeof args.payload === 'object') ? args.payload : {};
+                const url = (args && typeof args.url === 'string' && args.url.trim()) ? args.url : undefined;
+                log(`Function call: webhook_post(url=${url || '[default]'}, payloadKeys=${Object.keys(payload).length})`);
+                try {
+                    const result = await mcpCall('webhook.post', url ? { payload, url } : { payload });
+                    log('MCP webhook.post result: ' + JSON.stringify(result));
+                } catch (error) {
+                    log('MCP webhook.post failed: ' + error.message);
+                }
+                // Send function output back
+                const functionOutput = {
+                    type: 'conversation.item.create',
+                    item: {
+                        type: 'function_call_output',
+                        call_id: callId,
+                        output: JSON.stringify({ success: true, timestamp: new Date().toISOString() })
+                    }
+                };
+                if (dc && dc.readyState === 'open') {
+                    dc.send(JSON.stringify(functionOutput));
+                }
+                log('Sent webhook_post function call output');
                 if (dc && dc.readyState === 'open') {
                     dc.send(JSON.stringify({ type: 'response.create' }));
                 }

@@ -203,6 +203,60 @@ async function handleMcpRequest(request) {
             });
         }
 
+        // Handle webhook.post method - POST JSON to external webhook
+        if (method === 'webhook.post') {
+            const defaultUrl = 'https://n8n.monai.art/webhook/ddfbdb12-7d96-46f7-91c4-0713a013484b';
+            const url = (params && typeof params.url === 'string' && params.url.trim()) ? params.url : defaultUrl;
+            const payload = (params && typeof params.payload === 'object') ? params.payload : {};
+
+            try {
+                const resp = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                    // Use CORS mode; if the server does not allow it, this may throw.
+                    mode: 'cors',
+                });
+
+                const status = resp.status;
+                let responseText = '';
+                try { responseText = await resp.text(); } catch (_) {}
+
+                const responseData = {
+                    jsonrpc: '2.0',
+                    id: id,
+                    result: {
+                        content: [
+                            { type: 'text', text: `Webhook POST status: ${status}` }
+                        ],
+                        status,
+                        body: responseText?.slice(0, 2048) || ''
+                    }
+                };
+                return new Response(JSON.stringify(responseData), {
+                    status: 200,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*',
+                        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                        'Access-Control-Allow-Headers': 'Content-Type'
+                    }
+                });
+            } catch (err) {
+                return new Response(JSON.stringify({
+                    jsonrpc: '2.0',
+                    id: id,
+                    error: {
+                        code: -32000,
+                        message: 'Failed to POST webhook: ' + (err?.message || String(err))
+                    }
+                }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
+        }
+
         // Handle ui.panels.set method - show/hide debug panels (like gear button)
         if (method === 'ui.panels.set') {
             const visible = !!(params && typeof params.visible !== 'undefined' ? params.visible : true);
@@ -274,6 +328,24 @@ async function handleMcpRequest(request) {
                                     }
                                 },
                                 required: ['text']
+                            }
+                        },
+                        {
+                            name: 'webhook_post',
+                            description: 'POST a JSON payload to the external webhook',
+                            inputSchema: {
+                                type: 'object',
+                                properties: {
+                                    payload: {
+                                        type: 'object',
+                                        description: 'Arbitrary JSON payload to send'
+                                    },
+                                    url: {
+                                        type: 'string',
+                                        description: 'Optional override URL; defaults to the n8n webhook'
+                                    }
+                                },
+                                required: ['payload']
                             }
                         },
                         {
