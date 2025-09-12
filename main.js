@@ -1154,6 +1154,13 @@ async function disconnectVoice() {
         } catch (_) {}
         localStream = null;
 
+        // Allow a short delay so the tail end of any
+        // remote TTS/audio can finish playing before teardown.
+        // A few seconds is requested by UX.
+        try {
+            await new Promise((resolve) => setTimeout(resolve, 5000));
+        } catch (_) {}
+
         // Stop remote audio
         try {
             if (remoteAudioEl) {
