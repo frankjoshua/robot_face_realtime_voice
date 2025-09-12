@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pure-Browser Realtime Voice + Fake HTTP MCP</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@600;700;800&display=swap" rel="stylesheet">
+    <style>
+        html, body {
+            height: 100%;
+            background: transparent; /* Let canvas show through */
+        }
+        body { 
+            font-family: monospace; 
+            margin: 0; 
+            padding: 20px; 
+            min-height: 100svh; /* small viewport to avoid iOS bars jump */
+            display: flex; 
+            flex-direction: column; 
+        }
+        .top-content {
+            position: relative; z-index: 2; /* ensure above canvas */
+            flex: 0 0 auto;
+            margin-bottom: 20px;
+        }
+        .bottom-content {
+            position: relative; z-index: 2; /* ensure above canvas */
+            flex: 1;
+            display: grid;
+            grid-template-columns: 1fr 1fr; /* fixed 50/50 split */
+            gap: 12px;
+            align-content: end; /* keep panels near bottom when there is space */
+        }
+        .bottom-content > div { min-width: 0; }
+        textarea { width: 100%; height: 120px; }
+        input, button { margin: 5px 0; padding: 5px; }
+        pre { 
+            background: rgba(245, 245, 245, 0.9); 
+            padding: 10px; 
+            border: 1px solid #ccc; 
+            margin: 10px 0; 
+            backdrop-filter: blur(5px);
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        #out { 
+            background: rgba(232, 245, 232, 0.9); 
+            max-height: 150px;
+        }
+        #log { 
+            background: rgba(240, 240, 240, 0.9); 
+            font-size: 0.8em; 
+            max-height: 150px;
+        }
+
+        /* Floating gear button */
+        #gearBtn {
+            position: fixed;
+            top: 12px;
+            right: 12px;
+            z-index: 3; /* above UI panels and canvas */
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border: 1px solid rgba(255, 255, 255, 0.6);
+            background: rgba(0, 0, 0, 0.35);
+            color: #fff;
+            display: grid;
+            place-items: center;
+            cursor: pointer;
+            backdrop-filter: blur(4px);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+            user-select: none;
+            transition: background 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+        }
+        #gearBtn:hover { background: rgba(0, 0, 0, 0.45); }
+        #gearBtn:active { transform: scale(0.98); }
+
+        /* Minimal UI mode: hide all panels but keep face canvas and gear visible */
+        body.minimal-ui .top-content,
+        body.minimal-ui .bottom-content {
+            display: none !important;
+        }
+
+        /* Make the gear very subtle when UI is hidden */
+        body.minimal-ui #gearBtn {
+            opacity: 0.25;
+            background: rgba(0, 0, 0, 0.12);
+            border-color: rgba(255, 255, 255, 0.25);
+            color: rgba(255, 255, 255, 0.6);
+            box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+        }
+        body.minimal-ui #gearBtn:hover {
+            opacity: 0.95;
+            background: rgba(0, 0, 0, 0.40);
+            border-color: rgba(255, 255, 255, 0.6);
+            color: #fff;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+        }
+
+        /* Full-screen connect overlay */
+        #connectOverlay {
+            position: fixed;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            background: rgba(0, 0, 0, 0.6); /* shadow over everything */
+            backdrop-filter: blur(2px);
+            z-index: 10; /* above gear and panels */
+            opacity: 1;
+            transition: opacity 250ms ease;
+            will-change: opacity;
+        }
+        #connectOverlay.fade-out { opacity: 0; pointer-events: none; }
+        #connectOverlay .connect-button {
+            font-family: 'Poppins', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            font-size: clamp(22px, 4.0vw, 34px);
+            font-weight: 700;
+            letter-spacing: 0.3px;
+            padding: clamp(16px, 2.4vw, 24px) clamp(32px, 5vw, 48px);
+            border-radius: 18px;
+            border: none;
+            background: linear-gradient(135deg, #7c3aed 0%, #2563eb 100%);
+            color: #fff;
+            cursor: pointer;
+            text-shadow: 0 1px 1px rgba(0,0,0,0.30);
+            box-shadow: 0 14px 46px rgba(37, 99, 235, 0.45), 0 2px 0 rgba(255,255,255,0.25) inset;
+            transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.2s ease, filter 0.2s ease;
+            width: min(92vw, 520px);
+            touch-action: manipulation;
+        }
+        #connectOverlay .connect-button:hover {
+            transform: translateY(-2px) scale(1.01);
+            box-shadow: 0 18px 60px rgba(37, 99, 235, 0.55), 0 2px 0 rgba(255,255,255,0.25) inset;
+            filter: brightness(1.02);
+        }
+        #connectOverlay .connect-button:active {
+            transform: translateY(0);
+            box-shadow: 0 10px 34px rgba(37, 99, 235, 0.45), 0 2px 0 rgba(255,255,255,0.25) inset;
+            filter: brightness(0.98);
+        }
+        #connectOverlay .connect-button:focus-visible {
+            outline: none;
+            box-shadow: 0 0 0 4px rgba(59,130,246,0.45), 0 18px 60px rgba(37, 99, 235, 0.55);
+        }
+        #connectOverlay .connect-button:disabled {
+            opacity: 0.8;
+            cursor: not-allowed;
+            filter: grayscale(10%);
+        }
+    </style>
+</head>
+<body class="minimal-ui">
+    <!-- Baxter Eyes Background -->
+    <canvas id="eyesCanvas" style="position: fixed; inset: 0; width: 100dvw; height: 100dvh; z-index: 0; pointer-events: none;"></canvas>
+    <!-- Floating gear to toggle UI panels -->
+    <button id="gearBtn" title="Toggle UI panels">⚙️</button>
+
+    <!-- Prominent centered Connect overlay -->
+    <div id="connectOverlay">
+        <button id="overlayConnectBtn" class="connect-button">Connect</button>
+    </div>
+    
+    <div class="top-content">
+        <div>
+            <button id="startBtn">Connect</button>
+            <button id="disconnectBtn" style="margin-left:8px; display:none;">Disconnect</button>
+            <span id="debugStatus" style="margin-left: 12px; font-size: 12px; opacity: 0.85; padding: 2px 6px; border: 1px solid #ccc; border-radius: 6px; background: rgba(255,255,255,0.7);">
+                Tokens: In <span id="tokenIn">0</span> · Out <span id="tokenOut">0</span> · Tot <span id="tokenTotal">0</span> · Cost <span id="tokenCost">$0.0000</span>
+            </span>
+        </div>
+    </div>
+    
+    <div class="bottom-content">
+        <div>
+            <h3>Output (ui_print calls):</h3>
+            <pre id="out"></pre>
+        </div>
+        
+        <div>
+            <h3>Debug Log:</h3>
+            <pre id="log"></pre>
+        </div>
+    </div>
+
+    <script src="baxter-eyes.js"></script>
+    <script src="hal-eye.js"></script>
+    <script src="eve-eyes.js"></script>
+    <script src="main.js"></script>
+</body>
+</html>
