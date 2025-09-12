@@ -385,6 +385,8 @@ async function connectToRealtime(apiKey, model) {
             session: {
                 instructions,
                 input_audio_transcription: { model: 'whisper-1' },
+                // Set the TTS voice for Realtime audio responses
+                voice: 'verse',
                 turn_detection: {
                     type: 'server_vad',
                     threshold: 0.5,
