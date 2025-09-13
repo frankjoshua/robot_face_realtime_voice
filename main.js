@@ -249,6 +249,44 @@ function showConnectOverlayWithFade() {
     } catch (_) {}
 }
 
+// Show a large pulsing power icon overlay (for disconnect countdown)
+function showPowerOverlay() {
+    try {
+        let overlay = document.getElementById('powerOverlay');
+        if (!overlay) {
+            overlay = document.createElement('div');
+            overlay.id = 'powerOverlay';
+            overlay.innerHTML = '<div class="power-icon" aria-hidden="true">⏻</div>';
+            document.body.appendChild(overlay);
+        }
+        // Ensure visible and fade-in
+        overlay.style.display = 'grid';
+        if (!overlay.classList.contains('fade-out')) {
+            // ensure from hidden state
+            overlay.classList.add('fade-out');
+        }
+        requestAnimationFrame(() => {
+            void overlay.offsetHeight;
+            overlay.classList.remove('fade-out');
+        });
+    } catch (_) {}
+}
+
+// Hide the power overlay with fade-out
+function hidePowerOverlay() {
+    try {
+        const overlay = document.getElementById('powerOverlay');
+        if (!overlay) return;
+        if (overlay.style.display === 'none') return;
+        if (!overlay.classList.contains('fade-out')) {
+            overlay.classList.add('fade-out');
+        }
+        overlay.addEventListener('transitionend', () => {
+            overlay.style.display = 'none';
+        }, { once: true });
+    } catch (_) {}
+}
+
 // MCP client - makes HTTP calls to /mcp (intercepted by service worker)
 async function mcpCall(method, params) {
     try {
@@ -1326,6 +1364,8 @@ function togglePanels() {
 async function disconnectVoice() {
     try {
         log('Disconnecting voice session...');
+        // Show pulsing power icon before the 5s delay
+        showPowerOverlay();
         isRecording = false;
         // Close data channel
         try {
@@ -1356,6 +1396,8 @@ async function disconnectVoice() {
         try {
             await new Promise((resolve) => setTimeout(resolve, 5000));
         } catch (_) {}
+        // Fade out/remove the power overlay after the delay
+        hidePowerOverlay();
 
         // Stop remote audio
         try {
@@ -1392,5 +1434,6 @@ async function disconnectVoice() {
         log('Voice session disconnected');
     } catch (error) {
         log('Error during disconnect: ' + error.message);
+        try { hidePowerOverlay(); } catch (_) {}
     }
 }
