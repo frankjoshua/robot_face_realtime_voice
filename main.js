@@ -22,6 +22,8 @@ const tokenUsage = {
     last: { input: 0, output: 0, total: 0 },
     session: { input: 0, output: 0, total: 0 }
 };
+// Track last applied usage payload to avoid double-counting
+let __lastUsageSignature = null;
 
 // Pricing (USD per 1M tokens)
 const TOKEN_PRICING = {
@@ -59,6 +61,18 @@ function setTokenBadge(total, breakdown) {
         const input = (breakdown && typeof breakdown.input === 'number') ? breakdown.input : 0;
         const output = (breakdown && typeof breakdown.output === 'number') ? breakdown.output : 0;
 
+        // Prevent mid-session flicker to zeros: if a spurious update tries to set
+        // all values to 0 while we've already accumulated tokens this session,
+        // ignore it. Legit resets still occur via resetTokenCounter().
+        try {
+            if (input === 0 && output === 0 && total === 0) {
+                const sess = tokenUsage?.session || { total: 0 };
+                if ((Number(sess.total) || 0) > 0) {
+                    return; // skip zero flash
+                }
+            }
+        } catch (_) {}
+
         const inEl = document.getElementById('tokenIn');
         if (inEl) inEl.textContent = String(input);
         const outEl = document.getElementById('tokenOut');
@@ -85,10 +99,34 @@ function setTokenBadge(total, breakdown) {
 
 function updateUsageFromResponse(usage) {
     if (!usage || typeof usage !== 'object') return;
-    // Support multiple possible field names
-    const input = usage.input_tokens ?? usage.prompt_tokens ?? usage.total_input_tokens ?? 0;
-    const output = usage.output_tokens ?? usage.completion_tokens ?? usage.total_output_tokens ?? 0;
-    const total = usage.total_tokens ?? (input + output);
+    // Avoid re-applying identical usage objects across multiple events
+    try {
+        const sig = JSON.stringify(usage);
+        if (sig && sig === __lastUsageSignature) return;
+        __lastUsageSignature = sig;
+    } catch (_) {}
+
+    // Support multiple possible field names from different API versions
+    const input = (
+        usage.input_tokens ??
+        usage.prompt_tokens ??
+        usage.total_input_tokens ??
+        usage.input_token_count ??
+        usage.input ?? 0
+    );
+    const output = (
+        usage.output_tokens ??
+        usage.completion_tokens ??
+        usage.total_output_tokens ??
+        usage.output_token_count ??
+        usage.output ?? 0
+    );
+    const total = (
+        usage.total_tokens ??
+        usage.total_token_count ??
+        usage.total ??
+        ((Number(input) || 0) + (Number(output) || 0))
+    );
 
     tokenUsage.last = { input, output, total };
     tokenUsage.session.input += input;
@@ -351,8 +389,26 @@ async function registerServiceWorker() {
             try {
                 const badge = document.getElementById('debugStatus');
                 if (badge) {
-                    const t = badge.textContent;
-                    badge.textContent = (t ? t + ' · ' : '') + (hasController ? 'SW:on' : 'SW:off');
+                    // If previous runs replaced the contents, rebuild the tokens layout once
+                    if (!document.getElementById('tokenIn')) {
+                        const last = tokenUsage?.last || { input: 0, output: 0, total: 0 };
+                        const costs = computeCost(Number(last.input) || 0, Number(last.output) || 0);
+                        const costText = formatUSD(costs.total);
+                        badge.innerHTML = `Tokens: In <span id="tokenIn">${last.input || 0}</span> · Out <span id="tokenOut">${last.output || 0}</span> · Tot <span id="tokenTotal">${last.total || 0}</span> · Cost <span id="tokenCost">${costText}</span>`;
+                        // Ensure any subsequent updates keep working
+                        try { setTokenBadge(last.total || 0, { input: last.input || 0, output: last.output || 0 }); } catch (_) {}
+                    }
+                    // Append or update a small SW status badge without destroying children
+                    let swEl = document.getElementById('swStatus');
+                    if (!swEl) {
+                        const sep = document.createTextNode(' · ');
+                        swEl = document.createElement('span');
+                        swEl.id = 'swStatus';
+                        swEl.style.marginLeft = '4px';
+                        badge.appendChild(sep);
+                        badge.appendChild(swEl);
+                    }
+                    swEl.textContent = hasController ? 'SW:on' : 'SW:off';
                 }
             } catch (_) {}
             // If the SW isn't controlling yet, force a one-time reload to take control
@@ -948,7 +1004,7 @@ async function handleRealtimeMessage(message) {
         console.log('RESPONSE CREATED:', message);
     }
     
-    if (message.type === 'response.done' || message.type === 'response.completed') {
+    if (message.type === 'response.done' || message.type === 'response.completed' || message.type === 'response.final') {
         log('Response completed - Status: ' + (message.response?.status || 'unknown'));
         console.log('RESPONSE DONE:', message);
         
@@ -959,7 +1015,7 @@ async function handleRealtimeMessage(message) {
 
         // Update token usage from final chunk if provided
         try {
-            const usage = message.response?.usage || message.usage || null;
+            const usage = message.response?.usage || message.response?.metadata?.usage || message.usage || null;
             if (usage) {
                 log('Usage received on final chunk: ' + JSON.stringify(usage));
                 updateUsageFromResponse(usage);
@@ -970,6 +1026,14 @@ async function handleRealtimeMessage(message) {
             log('Error processing usage: ' + e.message);
         }
     }
+
+    // Fallback: if any message carries a usage object, apply it (once)
+    try {
+        const anyUsage = message.usage || message.response?.usage || message.response?.metadata?.usage || null;
+        if (anyUsage) {
+            updateUsageFromResponse(anyUsage);
+        }
+    } catch (_) {}
     
     if (message.type === 'response.output_item.added') {
         log('Response output item added: ' + message.item?.type);
