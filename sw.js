@@ -36,6 +36,35 @@ self.addEventListener('fetch', (event) => {
     // Let all other requests pass through
 });
 
+// Simple .env loader for Service Worker (reads plain text key=value)
+let __ENV_CACHE = null;
+async function __loadEnvOnce() {
+    if (__ENV_CACHE !== null) return __ENV_CACHE;
+    try {
+        const res = await fetch('.env', { cache: 'no-store' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const text = await res.text();
+        const map = {};
+        for (const rawLine of text.split(/\r?\n/)) {
+            const line = rawLine.trim();
+            if (!line || line.startsWith('#')) continue;
+            const eq = line.indexOf('=');
+            if (eq === -1) continue;
+            const key = line.slice(0, eq).trim();
+            const val = line.slice(eq + 1).trim();
+            if (key) map[key] = val;
+        }
+        __ENV_CACHE = map;
+    } catch (_) {
+        __ENV_CACHE = {};
+    }
+    return __ENV_CACHE;
+}
+async function __env(key) {
+    const env = await __loadEnvOnce();
+    return env[key];
+}
+
 // Handle MCP requests - Real MCP protocol implementation
 async function handleMcpRequest(request) {
     try {
@@ -163,7 +192,10 @@ async function handleMcpRequest(request) {
 
         // Handle webhook.post method - POST JSON to external webhook
         if (method === 'webhook.post') {
-            const defaultUrl = 'https://n8n.monai.art/webhook/ddfbdb12-7d96-46f7-91c4-0713a013484b';
+            const envUrl = await __env('WEBHOOK_URL');
+            const defaultUrl = (typeof envUrl === 'string' && envUrl.trim())
+                ? envUrl.trim()
+                : 'https://n8n.monai.art/webhook/ddfbdb12-7d96-46f7-91c4-0713a013484b';
             const url = (params && typeof params.url === 'string' && params.url.trim()) ? params.url : defaultUrl;
             const payload = (params && typeof params.payload === 'object') ? params.payload : {};
 
