@@ -4,6 +4,7 @@
 .env.development.local
 .env.test.local
 .env.production.local
+env.js
 
 # API Keys and sensitive configuration
 api-keys.txt

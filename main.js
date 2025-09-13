@@ -255,9 +255,49 @@ async function loadPrompt() {
 function setupServiceWorkerMessaging() {
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.addEventListener('message', (event) => {
-            if (event.data.type === 'eyes.set_mood') {
+            const outEl = document.getElementById('out');
+            const now = new Date(event.data.timestamp || Date.now()).toLocaleTimeString();
+            if (event.data.type === 'ui.alert') {
+                const text = String(event.data.text || 'Alert');
+                try { alert(text); } catch (_) { console.log('ALERT:', text); }
+                if (outEl) {
+                    outEl.textContent += `[${now}] ALERT: ${text}\n`;
+                    outEl.scrollTop = outEl.scrollHeight;
+                }
+            } else if (event.data.type === 'webhook.post') {
+                const url = event.data.url || '[no-url]';
+                const k = typeof event.data.payloadKeys === 'number' ? event.data.payloadKeys : '?';
+                const note = event.data.note ? ` (${event.data.note})` : '';
+                log(`[webhook] POST -> ${url} keys=${k}${note}`);
+                if (outEl) {
+                    outEl.textContent += `[${now}] MCP Broadcast: webhook.post -> ${url} (keys=${k})${note}\n`;
+                    outEl.scrollTop = outEl.scrollHeight;
+                }
+            } else if (event.data.type === 'webhook.post.result') {
+                const url = event.data.url || '[no-url]';
+                const status = typeof event.data.status === 'number' ? event.data.status : undefined;
+                const ok = (typeof event.data.ok === 'boolean') ? event.data.ok : undefined;
+                const err = event.data.error;
+                if (typeof status !== 'undefined') {
+                    log(`[webhook] Result url=${url} status=${status} ok=${ok}`);
+                    if (outEl) {
+                        outEl.textContent += `[${now}] MCP Broadcast: webhook.result -> ${url} status=${status} ok=${ok}\n`;
+                        outEl.scrollTop = outEl.scrollHeight;
+                    }
+                } else if (err) {
+                    log(`[webhook] Error url=${url} error=${err}`);
+                    if (outEl) {
+                        outEl.textContent += `[${now}] MCP Broadcast: webhook.error -> ${url} error=${err}\n`;
+                        outEl.scrollTop = outEl.scrollHeight;
+                    }
+                }
+            } else if (event.data.type === 'eyes.set_mood') {
                 const mood = event.data.mood || 'neutral';
                 log('MCP set mood broadcast: ' + mood);
+                if (outEl) {
+                    outEl.textContent += `[${now}] MCP Broadcast: eyes.set_mood -> ${mood}\n`;
+                    outEl.scrollTop = outEl.scrollHeight;
+                }
                 if (activeFace && typeof activeFace.setMood === 'function') {
                     activeFace.setMood(mood);
                     if (typeof activeFace.startAnimations === 'function') activeFace.startAnimations();
@@ -265,18 +305,34 @@ function setupServiceWorkerMessaging() {
             } else if (event.data.type === 'face.set') {
                 const name = event.data.name || 'baxter';
                 log('MCP face set broadcast: ' + name);
+                if (outEl) {
+                    outEl.textContent += `[${now}] MCP Broadcast: face.set -> ${name}\n`;
+                    outEl.scrollTop = outEl.scrollHeight;
+                }
                 switchFace(name);
             } else if (event.data.type === 'ui.panels.set') {
                 const v = !!event.data.visible;
                 setPanelsVisible(v);
                 log(`[ui] panels.set -> visible=${v}`);
+                if (outEl) {
+                    outEl.textContent += `[${now}] MCP Broadcast: ui.panels.set -> visible=${v}\n`;
+                    outEl.scrollTop = outEl.scrollHeight;
+                }
             } else if (event.data.type === 'ui.panels.toggle') {
                 const nowVisible = togglePanels();
                 log(`[ui] panels.toggle -> visible=${nowVisible}`);
+                if (outEl) {
+                    outEl.textContent += `[${now}] MCP Broadcast: ui.panels.toggle -> visible=${nowVisible}\n`;
+                    outEl.scrollTop = outEl.scrollHeight;
+                }
             } else if (event.data.type === 'voice.disconnect') {
                 log('[mcp] voice.disconnect broadcast received');
                 // Perform local disconnect
                 disconnectVoice();
+                if (outEl) {
+                    outEl.textContent += `[${now}] MCP Broadcast: voice.disconnect\n`;
+                    outEl.scrollTop = outEl.scrollHeight;
+                }
             }
         });
     }
@@ -292,6 +348,23 @@ async function registerServiceWorker() {
             const ready = await navigator.serviceWorker.ready;
             const hasController = !!navigator.serviceWorker.controller;
             log('Service Worker ready. Controlling: ' + hasController);
+            try {
+                const badge = document.getElementById('debugStatus');
+                if (badge) {
+                    const t = badge.textContent;
+                    badge.textContent = (t ? t + ' · ' : '') + (hasController ? 'SW:on' : 'SW:off');
+                }
+            } catch (_) {}
+            // If the SW isn't controlling yet, force a one-time reload to take control
+            try {
+                if (!hasController && !sessionStorage.getItem('swForceReload')) {
+                    sessionStorage.setItem('swForceReload', '1');
+                    log('Reloading once to let Service Worker take control');
+                    setTimeout(() => window.location.reload(), 50);
+                } else if (hasController) {
+                    sessionStorage.removeItem('swForceReload');
+                }
+            } catch (_) {}
             return registration;
         } catch (error) {
             log('Service Worker registration failed: ' + error.message);
@@ -568,7 +641,19 @@ async function handleRealtimeMessage(message) {
         
         try {
             const args = JSON.parse(message.arguments);
-            
+            // Append to Output panel for any tool call
+            try {
+                const outEl = document.getElementById('out');
+                if (outEl) {
+                    const ts = new Date().toLocaleTimeString();
+                    let snippet = '';
+                    try { snippet = JSON.stringify(args); } catch (_) { snippet = String(message.arguments || ''); }
+                    if (snippet.length > 160) snippet = snippet.slice(0, 160) + '…';
+                    outEl.textContent += `[${ts}] TOOL CALL: ${name} ${snippet}\n`;
+                    outEl.scrollTop = outEl.scrollHeight;
+                }
+            } catch (_) {}
+
             if (name === 'eyes_set_mood') {
                 const mood = (args.mood || 'neutral');
                 log(`Function call: eyes_set_mood(${mood})`);
@@ -720,12 +805,77 @@ async function handleRealtimeMessage(message) {
             } else if (name === 'webhook_post') {
                 const payload = (args && typeof args.payload === 'object') ? args.payload : {};
                 const url = (args && typeof args.url === 'string' && args.url.trim()) ? args.url : undefined;
-                log(`Function call: webhook_post(url=${url || '[default]'}, payloadKeys=${Object.keys(payload).length})`);
+                const keysCount = Object.keys(payload).length;
+                // Resolve effective URL (args.url or WEBHOOK_URL from env)
+                let effectiveUrl = url;
+                if (!effectiveUrl) {
+                    try {
+                        const envRes = await mcpCall('env.get', {});
+                        const envUrl = envRes?.result?.env?.WEBHOOK_URL;
+                        if (typeof envUrl === 'string' && envUrl.trim()) effectiveUrl = envUrl.trim();
+                    } catch (e) {}
+                }
+                // Final fallback: check page globals if env.js is also loaded in the page
                 try {
-                    const result = await mcpCall('webhook.post', url ? { payload, url } : { payload });
-                    log('MCP webhook.post result: ' + JSON.stringify(result));
-                } catch (error) {
-                    log('MCP webhook.post failed: ' + error.message);
+                    if (!effectiveUrl && typeof window !== 'undefined') {
+                        const pgUrl = (window.ENV && window.ENV.WEBHOOK_URL) || window.WEBHOOK_URL;
+                        if (typeof pgUrl === 'string' && pgUrl.trim()) effectiveUrl = pgUrl.trim();
+                    }
+                } catch (_) {}
+                log(`Function call: webhook_post(url=${effectiveUrl || '[missing]'}, payloadKeys=${keysCount})`);
+                // Proactive local log of the target before SW broadcast
+                log(`[webhook] Sending POST to ${effectiveUrl || '[missing]'} (keys=${keysCount})`);
+                // Also echo to Output panel immediately
+                try {
+                    const outEl = document.getElementById('out');
+                    if (outEl) {
+                        const ts = new Date().toLocaleTimeString();
+                        outEl.textContent += `[${ts}] TOOL CALL: webhook_post url=${effectiveUrl || '[missing]'} keys=${keysCount}\n`;
+                        outEl.scrollTop = outEl.scrollHeight;
+                    }
+                } catch (_) {}
+
+                const hasController = !!(navigator.serviceWorker && navigator.serviceWorker.controller);
+                if (!hasController && effectiveUrl) {
+                    // Fallback path when SW is not yet controlling: prefer beacon, else no-cors fetch
+                    let sentViaBeacon = false;
+                    try {
+                        if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+                            const payloadText = JSON.stringify(payload);
+                            const blob = new Blob([payloadText], { type: 'application/json' });
+                            sentViaBeacon = navigator.sendBeacon(effectiveUrl, blob);
+                            log(`[webhook] Beacon ${sentViaBeacon ? 'sent' : 'failed'} url=${effectiveUrl} bytes=${payloadText.length}`);
+                            try {
+                                const outEl = document.getElementById('out');
+                                if (outEl) {
+                                    const ts = new Date().toLocaleTimeString();
+                                    outEl.textContent += `[${ts}] BEACON: webhook_post -> ${effectiveUrl} (${sentViaBeacon ? 'sent' : 'failed'})\n`;
+                                    outEl.scrollTop = outEl.scrollHeight;
+                                }
+                            } catch (_) {}
+                        }
+                    } catch (_) {}
+                    if (!sentViaBeacon) {
+                        try {
+                            const resp = await fetch(effectiveUrl, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(payload),
+                                mode: 'cors'
+                            });
+                            log(`[webhook] Direct POST result url=${effectiveUrl} status=${resp.status} ok=${resp.ok}`);
+                        } catch (error) {
+                            log(`[webhook] Direct POST failed url=${effectiveUrl} error=${error.message}`);
+                        }
+                    }
+                } else {
+                    try {
+                        const params = effectiveUrl ? { payload, url: effectiveUrl } : (url ? { payload, url } : { payload });
+                        const result = await mcpCall('webhook.post', params);
+                        log(`MCP webhook.post result (url=${effectiveUrl || url || '[env]'}): ` + JSON.stringify(result));
+                    } catch (error) {
+                        log(`MCP webhook.post failed (url=${effectiveUrl || url || '[env]'}): ` + error.message);
+                    }
                 }
                 // Send function output back
                 const functionOutput = {

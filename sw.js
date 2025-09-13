@@ -9,7 +9,29 @@ self.addEventListener('install', (event) => {
 // Activate event - claim all clients immediately
 self.addEventListener('activate', (event) => {
     console.log('Service Worker activated');
-    event.waitUntil(self.clients.claim());
+    event.waitUntil((async () => {
+        try {
+            await self.clients.claim();
+        } catch (_) {}
+        // Proactively check for required config and alert if missing
+        try {
+            const url = await __env('WEBHOOK_URL');
+            if (!url || !String(url).trim()) {
+                const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+                for (const client of clients) {
+                    client.postMessage({
+                        type: 'ui.alert',
+                        text: 'Webhook URL is not configured. Provide params.url or set WEBHOOK_URL in env.js.'
+                    });
+                }
+                console.log('[sw][env] WEBHOOK_URL missing at activation');
+            } else {
+                console.log('[sw][env] WEBHOOK_URL found at activation');
+            }
+        } catch (e) {
+            console.log('[sw][env] activation check failed:', e?.message || e);
+        }
+    })());
 });
 
 // Fetch event - intercept requests to /mcp and handle CORS
@@ -40,24 +62,99 @@ self.addEventListener('fetch', (event) => {
 let __ENV_CACHE = null;
 async function __loadEnvOnce() {
     if (__ENV_CACHE !== null) return __ENV_CACHE;
+    // Try env.js (JS), env.json (JSON), env (key=value), then .env (key=value)
+    const map = {};
+    // 0) env.js via importScripts (preferred)
     try {
-        const res = await fetch('.env', { cache: 'no-store' });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const text = await res.text();
-        const map = {};
-        for (const rawLine of text.split(/\r?\n/)) {
-            const line = rawLine.trim();
-            if (!line || line.startsWith('#')) continue;
-            const eq = line.indexOf('=');
-            if (eq === -1) continue;
-            const key = line.slice(0, eq).trim();
-            const val = line.slice(eq + 1).trim();
-            if (key) map[key] = val;
+        // Allow env.js to set either self.ENV/self.__ENV__ objects or top-level globals
+        let loaded = false;
+        try { importScripts('env.js'); loaded = true; console.log('[sw][env] loaded env.js'); } catch (e1) {
+            console.log('[sw][env] failed env.js relative:', e1?.message || e1);
         }
-        __ENV_CACHE = map;
-    } catch (_) {
-        __ENV_CACHE = {};
-    }
+        if (!loaded) {
+            try { importScripts('/env.js'); loaded = true; console.log('[sw][env] loaded /env.js'); } catch (e2) {
+                console.log('[sw][env] failed /env.js absolute:', e2?.message || e2);
+            }
+        }
+        // Cache-busting retries in case of stale caches
+        if (!loaded) {
+            const bust = 'v=' + Date.now();
+            try { importScripts('env.js?' + bust); loaded = true; console.log('[sw][env] loaded env.js?'+bust); } catch (e3) {
+                console.log('[sw][env] failed env.js?bust:', e3?.message || e3);
+            }
+            if (!loaded) {
+                try { importScripts('/env.js?' + bust); loaded = true; console.log('[sw][env] loaded /env.js?'+bust); } catch (e4) {
+                    console.log('[sw][env] failed /env.js?bust:', e4?.message || e4);
+                }
+            }
+        }
+        const jsEnv = (self.ENV && typeof self.ENV === 'object') ? self.ENV
+                     : (self.__ENV__ && typeof self.__ENV__ === 'object') ? self.__ENV__
+                     : null;
+        if (jsEnv) {
+            Object.assign(map, jsEnv);
+            try { console.log('[sw][env] ENV keys:', Object.keys(jsEnv)); } catch (_) {}
+        }
+        // Also support simple global assignments, e.g., `self.WEBHOOK_URL = "..."` or `var WEBHOOK_URL = "..."`
+        const globals = ['WEBHOOK_URL', 'OPENAI_API_KEY', 'OPEN_AI_KEY'];
+        for (const k of globals) {
+            if (typeof self[k] === 'string' && self[k]) {
+                map[k] = self[k];
+                try { console.log('[sw][env] global', k, 'present'); } catch (_) {}
+            }
+        }
+        if (Object.keys(map).length > 0) {
+            __ENV_CACHE = map;
+            return __ENV_CACHE;
+        }
+    } catch (_) {}
+    // 1) env.json
+    try {
+        const resJson = await fetch('env.json', { cache: 'no-store' });
+        if (resJson.ok) {
+            const json = await resJson.json();
+            if (json && typeof json === 'object') {
+                Object.assign(map, json);
+                __ENV_CACHE = map;
+                return __ENV_CACHE;
+            }
+        }
+    } catch (_) {}
+    // 2) env (no dot)
+    try {
+        const resEnv = await fetch('env', { cache: 'no-store' });
+        if (resEnv.ok) {
+            const text = await resEnv.text();
+            for (const rawLine of text.split(/\r?\n/)) {
+                const line = rawLine.trim();
+                if (!line || line.startsWith('#')) continue;
+                const eq = line.indexOf('=');
+                if (eq === -1) continue;
+                const key = line.slice(0, eq).trim();
+                const val = line.slice(eq + 1).trim();
+                if (key) map[key] = val;
+            }
+            __ENV_CACHE = map;
+            return __ENV_CACHE;
+        }
+    } catch (_) {}
+    // 3) .env (dotfile)
+    try {
+        const resDot = await fetch('.env', { cache: 'no-store' });
+        if (resDot.ok) {
+            const text = await resDot.text();
+            for (const rawLine of text.split(/\r?\n/)) {
+                const line = rawLine.trim();
+                if (!line || line.startsWith('#')) continue;
+                const eq = line.indexOf('=');
+                if (eq === -1) continue;
+                const key = line.slice(0, eq).trim();
+                const val = line.slice(eq + 1).trim();
+                if (key) map[key] = val;
+            }
+        }
+    } catch (_) {}
+    __ENV_CACHE = map; // possibly empty
     return __ENV_CACHE;
 }
 async function __env(key) {
@@ -193,24 +290,83 @@ async function handleMcpRequest(request) {
         // Handle webhook.post method - POST JSON to external webhook
         if (method === 'webhook.post') {
             const envUrl = await __env('WEBHOOK_URL');
-            const defaultUrl = (typeof envUrl === 'string' && envUrl.trim())
-                ? envUrl.trim()
-                : 'https://n8n.monai.art/webhook/ddfbdb12-7d96-46f7-91c4-0713a013484b';
-            const url = (params && typeof params.url === 'string' && params.url.trim()) ? params.url : defaultUrl;
+            const providedUrl = (params && typeof params.url === 'string' && params.url.trim()) ? params.url.trim() : null;
+            let url = providedUrl || ((typeof envUrl === 'string' && envUrl.trim()) ? envUrl.trim() : null);
+
+            // If no URL available, try reloading env once in case SW cached before env.js existed
+            if (!url) {
+                try { __ENV_CACHE = null; } catch (_) {}
+                try {
+                    const reEnv = await __env('WEBHOOK_URL');
+                    if (!providedUrl && typeof reEnv === 'string' && reEnv.trim()) {
+                        url = reEnv.trim(); // Set the URL for the main execution path
+                    }
+                } catch (_) {}
+
+                // If still no URL available after retry, return error
+                if (!url) {
+                    const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+                    for (const client of clients) {
+                        client.postMessage({
+                            type: 'ui.alert',
+                            text: 'Webhook URL is not configured. Provide params.url or set WEBHOOK_URL in env.js.'
+                        });
+                    }
+                    return new Response(JSON.stringify({
+                        jsonrpc: '2.0',
+                        id: id,
+                        error: {
+                            code: -32602,
+                            message: 'Missing webhook URL: provide params.url or set WEBHOOK_URL in env.js'
+                        }
+                    }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+            }
+
             const payload = (params && typeof params.payload === 'object') ? params.payload : {};
+
+            // Broadcast that the webhook is being called
+            try {
+                const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+                for (const client of clients) {
+                    client.postMessage({
+                        type: 'webhook.post',
+                        url,
+                        payloadKeys: Object.keys(payload || {}).length,
+                        timestamp: new Date().toISOString()
+                    });
+                }
+            } catch (_) {}
 
             try {
                 const resp = await fetch(url, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload),
-                    // Use CORS mode; if the server does not allow it, this may throw.
+                    // Use CORS mode; server must allow it
                     mode: 'cors',
                 });
 
                 const status = resp.status;
                 let responseText = '';
                 try { responseText = await resp.text(); } catch (_) {}
+
+                // Broadcast the webhook result
+                try {
+                    const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+                    for (const client of clients) {
+                        client.postMessage({
+                            type: 'webhook.post.result',
+                            url,
+                            status,
+                            ok: resp.ok,
+                            timestamp: new Date().toISOString()
+                        });
+                    }
+                } catch (_) {}
 
                 const responseData = {
                     jsonrpc: '2.0',
@@ -219,6 +375,7 @@ async function handleMcpRequest(request) {
                         content: [
                             { type: 'text', text: `Webhook POST status: ${status}` }
                         ],
+                        used_url: url,
                         status,
                         body: responseText?.slice(0, 2048) || ''
                     }
@@ -233,6 +390,19 @@ async function handleMcpRequest(request) {
                     }
                 });
             } catch (err) {
+                // Broadcast the webhook error
+                try {
+                    const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+                    for (const client of clients) {
+                        client.postMessage({
+                            type: 'webhook.post.result',
+                            url,
+                            error: (err?.message || String(err)),
+                            timestamp: new Date().toISOString()
+                        });
+                    }
+                } catch (_) {}
+
                 return new Response(JSON.stringify({
                     jsonrpc: '2.0',
                     id: id,
@@ -299,6 +469,25 @@ async function handleMcpRequest(request) {
             });
         }
         
+        // Handle env.get method - return current environment map (sanitized)
+        if (method === 'env.get') {
+            const env = await __loadEnvOnce();
+            // Only expose whitelisted keys
+            const allow = ['WEBHOOK_URL'];
+            const out = {};
+            for (const k of allow) {
+                if (typeof env[k] !== 'undefined') out[k] = env[k];
+            }
+            return new Response(JSON.stringify({
+                jsonrpc: '2.0',
+                id: id,
+                result: { env: out }
+            }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+            });
+        }
+
         // Handle tools/list method for MCP capability discovery
         if (method === 'tools/list') {
             return new Response(JSON.stringify({
@@ -318,7 +507,7 @@ async function handleMcpRequest(request) {
                                     },
                                     url: {
                                         type: 'string',
-                                        description: 'Optional override URL; defaults to the n8n webhook'
+                                        description: 'Optional override URL; if omitted, uses WEBHOOK_URL from .env'
                                     }
                                 },
                                 required: ['payload']

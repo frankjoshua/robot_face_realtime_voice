@@ -68,6 +68,25 @@ The system will:
 6. 📡 **Broadcast result** ("MCP Broadcast: ...")
 7. 🗣️ **AI responds** (you'll hear the voice confirmation)
 
+## Environment Configuration
+
+This project reads configuration from a lightweight client-side `env.js` file (not committed to Git).
+
+- Create `env.js` at the project root with:
+
+```
+// env.js (do not commit)
+self.ENV = {
+  // Used by the Service Worker webhook tool when params.url is omitted
+  WEBHOOK_URL: "https://your-webhook.example.com/path"
+  // You can add more keys if needed, e.g. OPENAI_API_KEY (not recommended for production)
+};
+```
+
+- `env.js` is ignored via `.gitignore` and is optional. If it’s missing, the app still runs.
+- Fallbacks if `env.js` is not present: the Service Worker attempts to load `env.json`, then `env`, then `.env` (if your static server serves dotfiles). All are optional.
+- Webhook behavior: the `webhook_post` tool uses `params.url` if provided, otherwise `WEBHOOK_URL`. If neither is set, an in-page alert notifies users to configure one.
+
 ## File Structure
 
 ```
@@ -75,6 +94,7 @@ The system will:
   index.html    # Simple UI with session input, voice controls, and output areas
   main.js       # WebRTC setup, tool handling, fake MCP client
   sw.js         # Service Worker implementing fake MCP HTTP endpoint
+  env.js        # Local, untracked config (e.g., WEBHOOK_URL)
   README.md     # This file
 ```
 
