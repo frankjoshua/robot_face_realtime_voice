@@ -255,13 +255,7 @@ async function loadPrompt() {
 function setupServiceWorkerMessaging() {
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.addEventListener('message', (event) => {
-            if (event.data.type === 'ui.print') {
-                const outEl = document.getElementById('out');
-                const timestamp = new Date(event.data.timestamp || Date.now()).toLocaleTimeString();
-                outEl.textContent += `[${timestamp}] MCP Broadcast: ${event.data.text}\n`;
-                outEl.scrollTop = outEl.scrollHeight;
-                log('Received MCP broadcast: ' + event.data.text);
-            } else if (event.data.type === 'eyes.set_mood') {
+            if (event.data.type === 'eyes.set_mood') {
                 const mood = event.data.mood || 'neutral';
                 log('MCP set mood broadcast: ' + mood);
                 if (activeFace && typeof activeFace.setMood === 'function') {
@@ -377,7 +371,7 @@ async function connectToRealtime(apiKey, model) {
             instructions = await loadPrompt();
         } catch (_) {
             // Fallback inline prompt if file missing
-            instructions = 'You are a helpful assistant. Always call the ui_print function with every response. To set the Baxter eyes expression, call eyes_set_mood with mood one of "neutral", "happy", "sad", or "angry". When the user asks to change or express an emotion, call eyes_set_mood and also ui_print describing what you did.';
+            instructions = 'You are a helpful assistant. To set the Baxter eyes expression, call eyes_set_mood with mood one of "neutral", "happy", "sad", or "angry". When the user asks to change or express an emotion, call eyes_set_mood and briefly describe what you did.';
         }
 
         const sessionConfig = {
@@ -394,18 +388,6 @@ async function connectToRealtime(apiKey, model) {
                     silence_duration_ms: 500
                 },
                 tools: [
-                    {
-                        type: 'function',
-                        name: 'ui_print',
-                        description: 'Display text in the browser output area',
-                        parameters: {
-                            type: 'object',
-                            properties: { 
-                                text: { type: 'string', description: 'The text to display' } 
-                            },
-                            required: ['text']
-                        }
-                    },
                     {
                         type: 'function',
                         name: 'eyes_set_mood',
@@ -587,46 +569,7 @@ async function handleRealtimeMessage(message) {
         try {
             const args = JSON.parse(message.arguments);
             
-            if (name === 'ui_print') {
-                log(`Function call: ui_print("${args.text}")`);
-                
-                // Display text immediately
-                const outEl = document.getElementById('out');
-                outEl.textContent += args.text + '\n';
-                outEl.scrollTop = outEl.scrollHeight;
-                
-                // Call MCP endpoint
-                try {
-                    const result = await mcpCall('ui.print', { text: args.text });
-                    log('MCP call result: ' + JSON.stringify(result));
-                } catch (error) {
-                    log('MCP call failed: ' + error.message);
-                }
-                
-                // Send function call output back - proper format based on agents-js
-                const functionOutput = {
-                    type: 'conversation.item.create',
-                    item: {
-                        type: 'function_call_output',
-                        call_id: callId,
-                        output: JSON.stringify({ 
-                            success: true, 
-                            displayed: args.text,
-                            timestamp: new Date().toISOString()
-                        })
-                    }
-                };
-                
-                if (dc && dc.readyState === 'open') {
-                    dc.send(JSON.stringify(functionOutput));
-                }
-                log('Sent function call output');
-                
-                // Trigger response generation
-                if (dc && dc.readyState === 'open') {
-                    dc.send(JSON.stringify({ type: 'response.create' }));
-                }
-            } else if (name === 'eyes_set_mood') {
+            if (name === 'eyes_set_mood') {
                 const mood = (args.mood || 'neutral');
                 log(`Function call: eyes_set_mood(${mood})`);
 

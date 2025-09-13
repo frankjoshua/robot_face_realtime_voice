@@ -45,49 +45,7 @@ async function handleMcpRequest(request) {
         
         console.log('MCP request:', { id, method, params });
         
-        // Handle ui.print method - real MCP implementation
-        if (method === 'ui.print') {
-            // This is a real MCP call, not fake
-            const responseData = {
-                jsonrpc: '2.0',
-                id: id,
-                result: {
-                    content: [
-                        {
-                            type: 'text',
-                            text: `Successfully printed: "${params.text}"`
-                        }
-                    ]
-                }
-            };
-            
-            // Broadcast the print action to all clients
-            const clients = await self.clients.matchAll({ 
-                type: 'window', 
-                includeUncontrolled: true 
-            });
-            
-            for (const client of clients) {
-                client.postMessage({
-                    type: 'ui.print',
-                    text: params.text,
-                    timestamp: new Date().toISOString()
-                });
-            }
-            
-            console.log('MCP ui.print executed, broadcasted to', clients.length, 'clients');
-            
-            // Return proper MCP response
-            return new Response(JSON.stringify(responseData), {
-                status: 200,
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*',
-                    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-                    'Access-Control-Allow-Headers': 'Content-Type'
-                }
-            });
-        }
+        // (ui.print removed)
 
         // Handle eyes.set_mood method - set the expression of Baxter eyes via MCP
         if (method === 'eyes.set_mood') {
@@ -316,20 +274,6 @@ async function handleMcpRequest(request) {
                 id: id,
                 result: {
                     tools: [
-                        {
-                            name: 'ui_print',
-                            description: 'Display text in the browser UI',
-                            inputSchema: {
-                                type: 'object',
-                                properties: {
-                                    text: {
-                                        type: 'string',
-                                        description: 'Text to display'
-                                    }
-                                },
-                                required: ['text']
-                            }
-                        },
                         {
                             name: 'webhook_post',
                             description: 'POST a JSON payload to the external webhook',
